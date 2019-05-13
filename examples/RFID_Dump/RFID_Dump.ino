@@ -21,7 +21,7 @@
 #define SS_PIN          10          // Configurable, see typical pin layout above
 MFRC522 mfrc522(SS_PIN, RST_PIN);   // Create MFRC522 instance.
 
-bool verbose = false;
+#define VERBOSE false
 
 #define SECTOR_NUMBER    16
 #define BLOCK_NUMBER     64
@@ -30,11 +30,11 @@ bool verbose = false;
 #define BLOCK_SIZE_CRC   18
 #define DUMP_SIZE        1024
 
-byte buffer[BLOCK_SIZE_CRC];
-byte sector;
-byte block;
-MFRC522::StatusCode status;
-MFRC522::MIFARE_Key key;
+//byte buffer[BLOCK_SIZE_CRC];
+//byte sector;
+//byte block;
+//MFRC522::StatusCode status;
+//MFRC522::MIFARE_Key key;
 unsigned int foundKeysA;   // 0000 0000 0000 0001  <-  found key A of sector 0
 unsigned int foundKeysB;   // 1000 0000 0011 0000  <-  found key B of sectors 4, 5 and 15
 MFRC522::MIFARE_Key aFoundKeysA[SECTOR_NUMBER];
@@ -165,6 +165,8 @@ void displayCurrentDump() {
     }
   }
   Serial.println(F("+------+-----+-------------------------------------------------+-----------+-------------------------------------------------+--------------------------------------------+"));
+  dump_byte_array5(currentDump, DUMP_SIZE, BLOCK_SIZE);
+  Serial.println();
 } // End display_current_dump()
 
 
@@ -178,23 +180,26 @@ void displayCurrentDump() {
 bool tryToAuthenticateToAllSectorsWithDefaultKeys() {
   bool areAllKeysFound = false;
   
+  MFRC522::MIFARE_Key key;
+  byte block;
   foundKeysA = 0; // 0b0000000000000000
   foundKeysB = 0; // 0b0000000000000000
   
   Serial.println(F("Try to authenticate to all sectors with default keys..."));
-  Serial.println(F("Symbols: '.' no key found, '/' A key found, '\' B key found, 'x' both keys found"));
+  Serial.println(F("Symbols: '.' no key found, '/' A key found, '\\' B key found, 'x' both keys found"));
   int nbKnownKeys = sizeof(knownKeys) / MFRC522::MF_KEY_SIZE;
   for (byte k = 0; (k < nbKnownKeys) && ((foundKeysA < 0b1111111111111111) || (foundKeysB < 0b1111111111111111)); k++) {
     for (byte i = 0; i < MFRC522::MF_KEY_SIZE; i++) {
-      key.keyByte[i] = knownKeys[k][i];
+      key.keyByte[i] = pgm_read_byte_near(knownKeys + k*MFRC522::MF_KEY_SIZE + i);
     }
-    Serial.print(F("[Key: "));
+    Serial.print(k+1, DEC); Serial.print(F(" / ")); Serial.print(nbKnownKeys, DEC);
+    Serial.print(F(" [Key: "));
     dump_byte_array2(key.keyByte, MFRC522::MF_KEY_SIZE);
     Serial.print(F("] -> ["));
-    for (sector = 0; sector < SECTOR_NUMBER; sector++) {
+    for (byte sector = 0; sector < SECTOR_NUMBER; sector++) {
       block = (sector << 2) + 3;
       if ( ! bitRead(foundKeysA, sector)) {
-        bool foundKeyA = tryAuthenticateWithKeyBlockCommand(2, &key, block, MFRC522::PICC_CMD_MF_AUTH_KEY_A, mfrc522, verbose);
+        bool foundKeyA = tryAuthenticateWithKeyBlockCommand(2, &key, block, MFRC522::PICC_CMD_MF_AUTH_KEY_A, mfrc522, VERBOSE);
         if (foundKeyA) {
           bitSet(foundKeysA, sector);
           for (byte i = 0; i < MFRC522::MF_KEY_SIZE; i++) {
@@ -206,7 +211,7 @@ bool tryToAuthenticateToAllSectorsWithDefaultKeys() {
         }
       }
       if ( ! bitRead(foundKeysB, sector)) {
-        bool foundKeyB = tryAuthenticateWithKeyBlockCommand(2, &key, block, MFRC522::PICC_CMD_MF_AUTH_KEY_B, mfrc522, verbose);
+        bool foundKeyB = tryAuthenticateWithKeyBlockCommand(2, &key, block, MFRC522::PICC_CMD_MF_AUTH_KEY_B, mfrc522, VERBOSE);
         if (foundKeyB) {
           bitSet(foundKeysB, sector);
           for (byte i = 0; i < MFRC522::MF_KEY_SIZE; i++) {
@@ -251,20 +256,24 @@ bool tryToAuthenticateToAllSectorsWithDefaultKeys() {
 bool tryToAuthenticateToOneSectorWithDefaultKeys(byte p_sector) {
   bool areAllKeysFound = false;
   
+  MFRC522::MIFARE_Key key;
   bool foundKeyA;
   bool foundKeyB;
   
   Serial.print(F("Try to authenticate to sector ")); Serial.print(p_sector); Serial.println(F(" with default keys..."));
-  Serial.println(F("Symbols: '.' no key found, '/' A key found, '\' B key found, 'x' both keys found"));
+  Serial.println(F("Symbols: '.' no key found, '/' A key found, '\\' B key found, 'x' both keys found"));
   int nbKnownKeys = sizeof(knownKeys) / MFRC522::MF_KEY_SIZE;
   for (byte k = 0; (k < nbKnownKeys) && ( !foundKeyA || !foundKeyB); k++) {
+    for (byte i = 0; i < MFRC522::MF_KEY_SIZE; i++) {
+      key.keyByte[i] = pgm_read_byte_near(knownKeys + k*MFRC522::MF_KEY_SIZE + i);
+    }
     Serial.print(F("[Key: ")); dump_byte_array2(key.keyByte, MFRC522::MF_KEY_SIZE); Serial.print(F("] -> ["));
-    block = (sector << 2) + 3;
+    byte block = (p_sector << 2) + 3;
     if (!foundKeyA) {
-      foundKeyA = tryAuthenticateWithKeyBlockCommand(2, knownKeys[k], block, MFRC522::PICC_CMD_MF_AUTH_KEY_A, mfrc522, verbose);
+      foundKeyA = tryAuthenticateWithKeyBlockCommand(2, &key, block, MFRC522::PICC_CMD_MF_AUTH_KEY_A, mfrc522, VERBOSE);
     }
     if (!foundKeyB) {
-      foundKeyB = tryAuthenticateWithKeyBlockCommand(2, knownKeys[k], block, MFRC522::PICC_CMD_MF_AUTH_KEY_B, mfrc522, verbose);
+      foundKeyB = tryAuthenticateWithKeyBlockCommand(2, &key, block, MFRC522::PICC_CMD_MF_AUTH_KEY_B, mfrc522, VERBOSE);
     }
     if (foundKeyA && foundKeyB) {
       Serial.print(F("x"));
@@ -295,7 +304,7 @@ bool tryToAuthenticateToOneSectorWithDefaultKeys(byte p_sector) {
  * Sector 08 - Found   Key A: A0A1A2A3A4A5 Found   Key B: A0A1A2A3A4A5
  */
 void dumpKnownKeys() {
-  for (sector = 0; sector < SECTOR_NUMBER; sector++) {
+  for (byte sector = 0; sector < SECTOR_NUMBER; sector++) {
     Serial.print(F("Sector "));
     Serial.print(sector < 10 ? "0" : "");
     Serial.print(sector);
@@ -330,10 +339,11 @@ void readAccessBitsOfAllSectors(MFRC522 p_mfrc522) {
     Serial.print(sector);
     Serial.print(F(" "));
     byte block = (sector << 2) + 3;
-    byte bufferSize = sizeof(buffer);
-    readBlock(&aFoundKeysA[sector], block, MFRC522::PICC_CMD_MF_AUTH_KEY_A, buffer, &bufferSize, p_mfrc522, verbose);
+    byte myBuffer[BLOCK_SIZE_CRC];
+    byte myBufferSize = sizeof(myBuffer);
+    readBlock(&aFoundKeysA[sector], block, MFRC522::PICC_CMD_MF_AUTH_KEY_A, myBuffer, &myBufferSize, p_mfrc522, VERBOSE);
     for (byte i = 6; i < 10; i++) {
-      currentDump[block * BLOCK_SIZE + i] = buffer[i];
+      currentDump[block * BLOCK_SIZE + i] = myBuffer[i];
     }
   }
   Serial.println();
@@ -443,18 +453,19 @@ void readAllDataBlocks(MFRC522 p_mfrc522) {
     if (block_in_sector != 3) {
       Serial.print(block);
       Serial.print(F(" "));
-      byte bufferSize = sizeof(buffer);
+      byte myBuffer[BLOCK_SIZE_CRC];
+      byte myBufferSize = sizeof(myBuffer);
       if (canDataBlockBeReadWithKeyA(block)) {
-        aReadBlocks[block] = readBlock(&aFoundKeysA[sector], block, MFRC522::PICC_CMD_MF_AUTH_KEY_A, buffer, &bufferSize, p_mfrc522, verbose);
+        aReadBlocks[block] = readBlock(&aFoundKeysA[sector], block, MFRC522::PICC_CMD_MF_AUTH_KEY_A, myBuffer, &myBufferSize, p_mfrc522, VERBOSE);
       }
       else if (canDataBlockBeReadWithKeyB(block)) {
-        aReadBlocks[block] = readBlock(&aFoundKeysB[sector], block, MFRC522::PICC_CMD_MF_AUTH_KEY_B, buffer, &bufferSize, p_mfrc522, verbose);
+        aReadBlocks[block] = readBlock(&aFoundKeysB[sector], block, MFRC522::PICC_CMD_MF_AUTH_KEY_B, myBuffer, &myBufferSize, p_mfrc522, VERBOSE);
       }
       else {
         aReadBlocks[block] = false;
       }
       for (byte i = 0; i < BLOCK_SIZE; i++) {
-        currentDump[block * BLOCK_SIZE + i] = buffer[i];
+        currentDump[block * BLOCK_SIZE + i] = myBuffer[i];
       }
     }
     else {

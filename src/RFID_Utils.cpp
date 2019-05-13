@@ -44,6 +44,25 @@ void dump_byte_array4(byte *buffer, byte bufferSize) {
   }
   Serial.print(F("}"));
 } // End dump_byte_array4()
+/*
+ * {
+ * 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+ * 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF
+ * }
+ */
+void dump_byte_array5(byte *buffer, int bufferSize, byte blockSize) {
+  Serial.println(F("{"));
+  for (int i = 0; i < bufferSize; i++) {
+    if ((i > 0) && (i % blockSize == 0)) {
+      Serial.println();
+    }
+    Serial.print(buffer[i] < 0x10 ? "0x0" : "0x");
+    Serial.print(buffer[i], HEX);
+    Serial.print(i == (bufferSize - 1) ? "" : ", ");
+  }
+  Serial.println();
+  Serial.println(F("}"));
+} // End dump_byte_array5()
 
 
 
@@ -51,14 +70,6 @@ void dump_byte_array4(byte *buffer, byte bufferSize) {
 /*
  * Try to authenticate one time
  */
-bool authenticateWithKeyBlockCommand(byte *p_key, byte p_block, byte p_command, MFRC522 p_mfrc522, bool p_verbose)
-{
-  MFRC522::MIFARE_Key key;
-  for (byte i = 0; i < MFRC522::MF_KEY_SIZE; i++) {
-    key.keyByte[i] = p_key[i];
-  }
-  return authenticateWithKeyBlockCommand(&key, p_block, p_command, p_mfrc522, p_verbose);
-}
 bool authenticateWithKeyBlockCommand(MFRC522::MIFARE_Key *p_key, byte p_block, byte p_command, MFRC522 p_mfrc522, bool p_verbose)
 {
   bool isAuthenticated = false;
@@ -109,14 +120,6 @@ bool authenticateWithKeyBlockCommand(MFRC522::MIFARE_Key *p_key, byte p_block, b
 /*
  * Try to authenticate n times
  */
-bool tryAuthenticateWithKeyBlockCommand(byte p_nbAttempt, byte *p_key, byte p_block, byte p_command, MFRC522 p_mfrc522, bool p_verbose)
-{
-    MFRC522::MIFARE_Key key;
-  for (byte i = 0; i < MFRC522::MF_KEY_SIZE; i++) {
-    key.keyByte[i] = p_key[i];
-  }
-  return tryAuthenticateWithKeyBlockCommand(p_nbAttempt, &key, p_block, p_command, p_mfrc522, p_verbose);
-}
 bool tryAuthenticateWithKeyBlockCommand(byte p_nbAttempt, MFRC522::MIFARE_Key *p_key, byte p_block, byte p_command, MFRC522 p_mfrc522, bool p_verbose)
 {
   bool isAuthenticated = false;
@@ -132,14 +135,6 @@ bool tryAuthenticateWithKeyBlockCommand(byte p_nbAttempt, MFRC522::MIFARE_Key *p
  * 1. Authenticate
  * 2. Read Block
  */
-bool readBlock(byte *p_key, byte p_block, byte p_command,byte *p_buffer, byte *p_bufferSize, MFRC522 p_mfrc522, bool p_verbose)
-{
-  MFRC522::MIFARE_Key key;
-  for (byte i = 0; i < MFRC522::MF_KEY_SIZE; i++) {
-    key.keyByte[i] = p_key[i];
-  }
-  return readBlock(&key, p_block, p_command, p_buffer, p_bufferSize, p_mfrc522, p_verbose);
-}
 bool readBlock(MFRC522::MIFARE_Key *p_key, byte p_block, byte p_command, byte *p_buffer, byte *p_bufferSize, MFRC522 p_mfrc522, bool p_verbose)
 {
   bool isAuthenticated = false;
@@ -172,21 +167,73 @@ bool readBlock(MFRC522::MIFARE_Key *p_key, byte p_block, byte p_command, byte *p
   
   return isSuccessRead;
 }
+bool readBlockWithKeyAB(MFRC522::MIFARE_Key *p_keyA, MFRC522::MIFARE_Key *p_keyB, byte p_block, byte *p_buffer, byte *p_bufferSize, MFRC522 p_mfrc522, bool p_verbose)
+{
+  bool isSuccessRead = false;
+
+  byte sector = p_block / BLOCK_PER_SECTOR;
+  byte sector_trailer = sector * BLOCK_PER_SECTOR + 3;
+  isSuccessRead = readBlock(p_keyA, sector_trailer, MFRC522::PICC_CMD_MF_AUTH_KEY_A, p_buffer, p_bufferSize, p_mfrc522, p_verbose);
+  if (!isSuccessRead) {
+    Serial.print(F("Can't read sector trailer of Sector : "));
+    Serial.println(sector, DEC);
+    Serial.print(F("With KeyA : "));
+    dump_byte_array((*p_keyA).keyByte, MFRC522::MF_KEY_SIZE);
+    Serial.println();
+    return false;
+  }
+  // Block is Sector Trailer
+  if (p_block == sector_trailer) {
+    // Write KeyA and KeyB (from parameters) in p_buffer
+    for (byte i=0; i<MFRC522::MF_KEY_SIZE; i++) {
+      p_buffer[i] = p_keyA->keyByte[i];
+      p_buffer[MFRC522::MF_KEY_SIZE + 4 + i] = p_keyB->keyByte[i];
+    }
+  }
+  else {
+    // Determine AccessBits from Sector Trailer
+    byte byte7OfSectorTrailer = p_buffer[7];
+    byte byte8OfSectorTrailer = p_buffer[8];
+    struct_accessBits accessBits;
+    getAccessBits(p_block, byte7OfSectorTrailer, byte8OfSectorTrailer, &accessBits);
+
+    // Block can be read with KeyA
+    if (canDataBlockBeReadWithKeyA(&accessBits)) {
+      isSuccessRead = readBlock(p_keyA, p_block, MFRC522::PICC_CMD_MF_AUTH_KEY_A, p_buffer, p_bufferSize, p_mfrc522, p_verbose);
+    }
+    // Block can be read with KeyB
+    else if (canDataBlockBeReadWithKeyB(&accessBits)) {
+      isSuccessRead = readBlock(p_keyB, p_block, MFRC522::PICC_CMD_MF_AUTH_KEY_B, p_buffer, p_bufferSize, p_mfrc522, p_verbose);
+    }
+    // Block can't be read neither KeyA nor KeyB
+    else {
+      Serial.println();
+      Serial.println();
+      Serial.print(F("Can't read Block "));
+      Serial.print(p_block, DEC);
+      Serial.println(F(" neither KeyA nor KeyB !!!"));
+      return false;
+    }
+  }
+  
+  return isSuccessRead;
+}
 
 /*
  * 1. Authenticate
  * 2. Write Block
  */
-bool writeBlock(byte *p_key, byte p_block, byte p_command, byte *p_buffer, byte p_bufferSize, MFRC522 p_mfrc522, bool p_verbose)
+/*bool writeBlock(byte *p_key, byte p_block, byte p_command, byte *p_buffer, byte p_bufferSize, MFRC522 p_mfrc522, bool p_verbose)
 {
   MFRC522::MIFARE_Key key;
   for (byte i = 0; i < MFRC522::MF_KEY_SIZE; i++) {
     key.keyByte[i] = p_key[i];
   }
   return writeBlock(&key, p_block, p_command, p_buffer, p_bufferSize, p_mfrc522, p_verbose);
-}
+}*/
 bool writeBlock(MFRC522::MIFARE_Key *p_key, byte p_block, byte p_command, byte *p_buffer, byte p_bufferSize, MFRC522 p_mfrc522, bool p_verbose)
 {
+  // Sector Trailer
   if (p_block % 4 == 3) {
     byte byte7OfSectorTrailer = p_buffer[7];
     byte byte8OfSectorTrailer = p_buffer[8];
@@ -199,17 +246,15 @@ bool writeBlock(MFRC522::MIFARE_Key *p_key, byte p_block, byte p_command, byte *
       return false;
     }
   }
-  if (p_block == 0) {
-    Serial.println(); Serial.println();
-    Serial.println(F("Not implemented : Write Block 0 !!!"));
-    Serial.println(); Serial.println();
-    return false;
-  }
   bool isAuthenticated = false;
   bool isSuccessWrite = false;
 
   isAuthenticated = tryAuthenticateWithKeyBlockCommand(2, p_key, p_block, p_command, p_mfrc522, p_verbose);
   if (isAuthenticated) {
+    if (p_block == 0) {
+      p_mfrc522.PCD_Init();
+      p_mfrc522.MIFARE_OpenUidBackdoor(true);
+    }
     MFRC522::StatusCode status = p_mfrc522.MIFARE_Write(p_block, p_buffer, p_bufferSize);
     if (status == MFRC522::STATUS_OK) {
       if (p_verbose) {
@@ -381,7 +426,7 @@ bool canKeyBBeWrittenWithKeyB(struct_accessBits *p_accessBits) {
 /*
  * 
  */
-bool formatSector(byte *p_keyA, byte *p_keyB, byte p_sector, MFRC522 p_mfrc522, bool p_verbose) {
+bool formatSector(MFRC522::MIFARE_Key *p_keyA, MFRC522::MIFARE_Key *p_keyB, byte p_sector, bool p_withB0, MFRC522 p_mfrc522, bool p_verbose) {
   bool ret = false;
   
   byte sector_trailer = (p_sector << 2) + 3;
@@ -392,7 +437,7 @@ bool formatSector(byte *p_keyA, byte *p_keyB, byte p_sector, MFRC522 p_mfrc522, 
     Serial.print(F("Can't read sector trailer of Sector : "));
     Serial.println(p_sector, DEC);
     Serial.print(F("With KeyA : "));
-    dump_byte_array(p_keyA, MFRC522::MF_KEY_SIZE);
+    dump_byte_array((*p_keyA).keyByte, MFRC522::MF_KEY_SIZE);
     Serial.println();
     return false;
   }
@@ -413,30 +458,30 @@ bool formatSector(byte *p_keyA, byte *p_keyB, byte p_sector, MFRC522 p_mfrc522, 
   if (canAccessBitsBeWrittenWithKeyB(&accessBits)) {
     // {0x??, 0x??, 0x??, 0x??, 0x??, 0x??, 0xFF, 0x07, 0x80, 0x69, 0x??, 0x??, 0x??, 0x??, 0x??, 0x??};
     for (byte i=0; i<MFRC522::MF_KEY_SIZE; i++) {
-      buffer[i] = p_keyA[i];
-      buffer[MFRC522::MF_KEY_SIZE + 4 + i] = p_keyB[i];
+      buffer[i] = (*p_keyA).keyByte[i];
+      buffer[MFRC522::MF_KEY_SIZE + 4 + i] = (*p_keyB).keyByte[i];
     }
     // c13=0, c23=0, c33=1 (transport configuration)
-    buffer[MFRC522::MF_KEY_SIZE] = 0xFF;
-    buffer[MFRC522::MF_KEY_SIZE + 1] = 0x07;
-    buffer[MFRC522::MF_KEY_SIZE + 2] = 0x80;
-    buffer[MFRC522::MF_KEY_SIZE + 3] = 0x69;
+    buffer[MFRC522::MF_KEY_SIZE] = ACCESS_BYTE_6;
+    buffer[MFRC522::MF_KEY_SIZE + 1] = ACCESS_BYTE_7;
+    buffer[MFRC522::MF_KEY_SIZE + 2] = ACCESS_BYTE_8;
+    buffer[MFRC522::MF_KEY_SIZE + 3] = ACCESS_BYTE_9;
 //Serial.println(F("Try to write "));
 //dump_byte_array(buffer, sizeof(buffer));
 //Serial.println();
     ret = writeBlock(p_keyB, sector_trailer, MFRC522::PICC_CMD_MF_AUTH_KEY_B, buffer, BLOCK_SIZE, p_mfrc522, p_verbose);
   }
-  byte defaultKey[MFRC522::MF_KEY_SIZE];
+  MFRC522::MIFARE_Key defaultKey;
   // {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x07, 0x80, 0x69, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF}
   for (byte i=0; i<MFRC522::MF_KEY_SIZE; i++) {
-    defaultKey[i] = 0xFF;
-    buffer[i] = 0xFF;
-    buffer[MFRC522::MF_KEY_SIZE + 4 + i] = 0xFF;
+    defaultKey.keyByte[i] = DEFAULT_KEY;
+    buffer[i] = DEFAULT_KEY;
+    buffer[MFRC522::MF_KEY_SIZE + 4 + i] = DEFAULT_KEY;
   }
-  buffer[MFRC522::MF_KEY_SIZE] = 0xFF;
-  buffer[MFRC522::MF_KEY_SIZE + 1] = 0x07;
-  buffer[MFRC522::MF_KEY_SIZE + 2] = 0x80;
-  buffer[MFRC522::MF_KEY_SIZE + 3] = 0x69;
+  buffer[MFRC522::MF_KEY_SIZE] = ACCESS_BYTE_6;
+  buffer[MFRC522::MF_KEY_SIZE + 1] = ACCESS_BYTE_7;
+  buffer[MFRC522::MF_KEY_SIZE + 2] = ACCESS_BYTE_8;
+  buffer[MFRC522::MF_KEY_SIZE + 3] = ACCESS_BYTE_9;
 //Serial.println(F("Try to write "));
 //dump_byte_array(buffer, sizeof(buffer));
 //Serial.println();
@@ -446,31 +491,49 @@ bool formatSector(byte *p_keyA, byte *p_keyB, byte p_sector, MFRC522 p_mfrc522, 
   }
   byte block = (p_sector << 2);
   for (byte i=0; i<3; i++) {
-    ret = writeBlock(defaultKey, block + i, MFRC522::PICC_CMD_MF_AUTH_KEY_A, buffer, BLOCK_SIZE, p_mfrc522, p_verbose);
+	  // if block == 0 && writeB0  ==> write
+	  // if block == 0 && pas writeB0 ==> no write
+	  // if block > 0 ==> write
+/*    if ((block + i) != 0 || p_withB0) {
+      ret = writeBlock(&defaultKey, block + i, MFRC522::PICC_CMD_MF_AUTH_KEY_A, buffer, BLOCK_SIZE, p_mfrc522, p_verbose);
+    }
+    else {
+      Serial.println(F("Skipping Block 0"));
+    }*/
+    if ((block + i) == 0) {
+      if (p_withB0) {
+        p_mfrc522.PCD_Init();
+        ret = p_mfrc522.MIFARE_UnbrickUidSector(true);
+      }
+      else {
+        Serial.println(F("Skipping Block 0"));
+      }
+    }
+    else {
+      ret = writeBlock(&defaultKey, block + i, MFRC522::PICC_CMD_MF_AUTH_KEY_A, buffer, BLOCK_SIZE, p_mfrc522, p_verbose);
+    }
   }
   
   return ret;
 }
 
-
 void getAccessBits(byte p_block, byte p_byte7OfSectorTrailer, byte p_byte8OfSectorTrailer, struct_accessBits *p_accessBits) {
-  byte block_in_sector = p_block % BLOCK_PER_SECTOR;
-  if (block_in_sector == 3) {             // Sector Trailer
+  if (p_block % BLOCK_PER_SECTOR == 3) {             // Sector Trailer
     p_accessBits->c1 = bitRead(p_byte7OfSectorTrailer, 7);  // c13
     p_accessBits->c2 = bitRead(p_byte8OfSectorTrailer, 3);  // c23
     p_accessBits->c3 = bitRead(p_byte8OfSectorTrailer, 7);  // c33
   }
-  else if (block_in_sector == 2) {        // Data Block
+  else if (p_block % BLOCK_PER_SECTOR == 2) {        // Data Block
     p_accessBits->c1 = bitRead(p_byte7OfSectorTrailer, 6);  // c12
     p_accessBits->c2 = bitRead(p_byte8OfSectorTrailer, 2);  // c22
     p_accessBits->c3 = bitRead(p_byte8OfSectorTrailer, 6);  // c32
   }
-  else if (block_in_sector == 1) {        // Data Block
+  else if (p_block % BLOCK_PER_SECTOR == 1) {        // Data Block
     p_accessBits->c1 = bitRead(p_byte7OfSectorTrailer, 5);  // c11
     p_accessBits->c2 = bitRead(p_byte8OfSectorTrailer, 1);  // c21
     p_accessBits->c3 = bitRead(p_byte8OfSectorTrailer, 5);  // c31
   }
-  else { // if (block_in_sector == 0) {   // Data Block
+  else { // if (p_block % BLOCK_PER_SECTOR == 0) {   // Data Block
     p_accessBits->c1 = bitRead(p_byte7OfSectorTrailer, 4);  // c10
     p_accessBits->c2 = bitRead(p_byte8OfSectorTrailer, 0);  // c20
     p_accessBits->c3 = bitRead(p_byte8OfSectorTrailer, 4);  // c30
